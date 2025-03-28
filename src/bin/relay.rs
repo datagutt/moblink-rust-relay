@@ -1,6 +1,4 @@
-mod protocol;
-mod relay;
-
+use moblink_rust::relay;
 use std::time::Duration;
 use tokio::{fs::File, io::AsyncReadExt, process::Command};
 

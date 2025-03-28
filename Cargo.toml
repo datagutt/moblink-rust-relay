@@ -12,7 +12,11 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "moblink-rust-relay"
-path = "src/main.rs"
+path = "src/bin/relay.rs"
+
+[[bin]]
+name = "moblink-rust-streamer"
+path = "src/bin/streamer.rs"
 
 [dependencies]
 base64 = "0.22.1"

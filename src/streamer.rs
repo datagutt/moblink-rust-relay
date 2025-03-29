@@ -7,13 +7,27 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info};
 use rand::distr::{Alphanumeric, SampleString};
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, Weak};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+
+pub type TunnelCreatedClosure = Box<
+    dyn Fn(String, String, String, u16) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
+        + Send
+        + Sync,
+>;
+
+pub type TunnelDestroyedClosure = Box<
+    dyn Fn(String, String, String, u16) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
+        + Send
+        + Sync,
+>;
 
 struct Relay {
     me: Weak<Mutex<Self>>,
@@ -88,7 +102,7 @@ impl Relay {
                 }
             },
             Message::Ping(data) => Ok(self.writer.send(Message::Pong(data)).await?),
-            _ => Err(format!("Unsupported wbsocket message: {:?}", message).into()),
+            _ => Err(format!("Unsupported websocket message: {:?}", message).into()),
         }
     }
 
@@ -160,6 +174,19 @@ impl Relay {
             self.relay_name,
             self.relay_id
         );
+        let Some(streamer) = self.streamer.upgrade() else {
+            return;
+        };
+        let Some(tunnel_created) = &streamer.lock().await.tunnel_created else {
+            return;
+        };
+        tunnel_created(
+            self.relay_id.clone(),
+            self.relay_name.clone(),
+            self.remote_address.ip().to_string(),
+            tunnel_port,
+        )
+        .await;
     }
 
     async fn tunnel_destroyed(&mut self) {
@@ -173,6 +200,19 @@ impl Relay {
             self.relay_name,
             self.relay_id
         );
+        let Some(streamer) = self.streamer.upgrade() else {
+            return;
+        };
+        let Some(tunnel_destroyed) = &streamer.lock().await.tunnel_destroyed else {
+            return;
+        };
+        tunnel_destroyed(
+            self.relay_id.clone(),
+            self.relay_name.clone(),
+            self.remote_address.ip().to_string(),
+            tunnel_port,
+        )
+        .await;
     }
 
     async fn start_handshake(&mut self) {
@@ -225,6 +265,8 @@ pub struct Streamer {
     password: String,
     destination_address: String,
     destination_port: u16,
+    tunnel_created: Option<TunnelCreatedClosure>,
+    tunnel_destroyed: Option<TunnelDestroyedClosure>,
     relays: Vec<Arc<Mutex<Relay>>>,
 }
 
@@ -234,6 +276,8 @@ impl Streamer {
         password: String,
         destination_address: String,
         destination_port: u16,
+        tunnel_created: Option<TunnelCreatedClosure>,
+        tunnel_destroyed: Option<TunnelDestroyedClosure>,
     ) -> Arc<Mutex<Self>> {
         Arc::new_cyclic(|me| {
             Mutex::new(Self {
@@ -242,6 +286,8 @@ impl Streamer {
                 password,
                 destination_address,
                 destination_port,
+                tunnel_created,
+                tunnel_destroyed,
                 relays: Vec::new(),
             })
         })

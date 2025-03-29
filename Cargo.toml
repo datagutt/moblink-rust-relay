@@ -30,7 +30,6 @@ serde_json = "1.0.135"
 url = "2.5.4"
 log = "0.4"
 env_logger = "0.11"
-anstyle = "1.0.10"
 uuid = { version = "1.11", features = ["v4"] }
 pnet = "0.35.0"
 socket2 = "0.5.8"

@@ -13,8 +13,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
-use tokio::net::TcpListener;
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -312,17 +311,7 @@ impl Streamer {
 
         info!("WebSocket server listening on '{}'", listener_address);
 
-        let service_daemon = ServiceDaemon::new()?;
-        let mut properties = HashMap::new();
-        properties.insert("name".to_string(), self.name.clone());
-        let service_info = ServiceInfo::new(
-            MDNS_SERVICE_TYPE,
-            &self.id,
-            &format!("{}.local.", self.id),
-            &self.address,
-            self.port,
-            properties,
-        )?;
+        let (service_daemon, service_info) = self.create_mdns_service()?;
 
         let streamer = self.me.clone();
 
@@ -345,6 +334,22 @@ impl Streamer {
         });
 
         Ok(())
+    }
+
+    fn create_mdns_service(
+        &self,
+    ) -> Result<(ServiceDaemon, ServiceInfo), Box<dyn std::error::Error>> {
+        let service_daemon = ServiceDaemon::new()?;
+        let properties = HashMap::from([("name".to_string(), self.name.clone())]);
+        let service_info = ServiceInfo::new(
+            MDNS_SERVICE_TYPE,
+            &self.id,
+            &format!("{}.local.", self.id),
+            &self.address,
+            self.port,
+            properties,
+        )?;
+        Ok((service_daemon, service_info))
     }
 
     async fn handle_relay_connection(&mut self, tcp_stream: TcpStream, remote_address: SocketAddr) {

@@ -1,8 +1,7 @@
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 pub const API_VERSION: &str = "1.0";
 

@@ -53,18 +53,7 @@ fn create_tunnel_created_closure(executable: Option<String>) -> Option<TunnelCre
     Some(Box::new(move |relay_id, relay_name, address, port| {
         let executable = executable.clone();
         Box::pin(async move {
-            if let Err(error) = Command::new(executable)
-                .arg("--relay-id")
-                .arg(relay_id)
-                .arg("--relay-name")
-                .arg(relay_name)
-                .arg("--address")
-                .arg(address)
-                .arg("--port")
-                .arg(port.to_string())
-                .output()
-                .await
-            {
+            if let Err(error) = exec(executable, relay_id, relay_name, address, port).await {
                 error!("Tunnel created executable failed with: {}", error);
             }
         })
@@ -76,22 +65,36 @@ fn create_tunnel_destroyed_closure(executable: Option<String>) -> Option<TunnelD
     Some(Box::new(move |relay_id, relay_name, address, port| {
         let executable = executable.clone();
         Box::pin(async move {
-            if let Err(error) = Command::new(executable)
-                .arg("--relay-id")
-                .arg(relay_id)
-                .arg("--relay-name")
-                .arg(relay_name)
-                .arg("--address")
-                .arg(address)
-                .arg("--port")
-                .arg(port.to_string())
-                .output()
-                .await
-            {
+            if let Err(error) = exec(executable, relay_id, relay_name, address, port).await {
                 error!("Tunnel destroyed executable failed with: {}", error);
             }
         })
     }))
+}
+
+async fn exec(
+    executable: String,
+    relay_id: String,
+    relay_name: String,
+    address: String,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new(executable)
+        .arg("--relay-id")
+        .arg(relay_id)
+        .arg("--relay-name")
+        .arg(relay_name)
+        .arg("--address")
+        .arg(address)
+        .arg("--port")
+        .arg(port.to_string())
+        .status()
+        .await?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Failed with status {}", status).into())
+    }
 }
 
 #[tokio::main]

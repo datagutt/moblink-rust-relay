@@ -12,7 +12,11 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "moblink-rust-relay"
-path = "src/main.rs"
+path = "src/bin/relay.rs"
+
+[[bin]]
+name = "moblink-rust-streamer"
+path = "src/bin/streamer.rs"
 
 [dependencies]
 base64 = "0.22.1"
@@ -26,8 +30,8 @@ serde_json = "1.0.135"
 url = "2.5.4"
 log = "0.4"
 env_logger = "0.11"
-anstyle = "1.0.10"
 uuid = { version = "1.11", features = ["v4"] }
 pnet = "0.35.0"
 socket2 = "0.5.8"
 mdns-sd = "0.13.1"
+rand = "0.9.0"

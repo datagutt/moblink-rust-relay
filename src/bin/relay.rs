@@ -1,6 +1,4 @@
-mod protocol;
-mod relay;
-
+use moblink_rust::{relay, MDNS_SERVICE_TYPE};
 use std::time::Duration;
 use tokio::{fs::File, io::AsyncReadExt, process::Command};
 
@@ -142,7 +140,7 @@ async fn run_automatic(args: Args, relay_id: String) {
         loop {
             let mdns = ServiceDaemon::new().expect("Failed to create mDNS daemon");
             let receiver = mdns
-                .browse("_moblink._tcp.local.")
+                .browse(MDNS_SERVICE_TYPE)
                 .expect("Failed to browse services");
 
             info!("Searching for Moblink streamers via mDNS...");

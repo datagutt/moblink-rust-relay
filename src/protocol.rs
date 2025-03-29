@@ -1,4 +1,9 @@
+use base64::engine::general_purpose;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+pub const API_VERSION: &str = "1.0";
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct Present {}
@@ -10,13 +15,13 @@ pub enum MoblinkResult {
     WrongPassword(Present),
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Authentication {
     pub challenge: String,
     pub salt: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Hello {
     #[serde(rename = "apiVersion")]
     #[allow(dead_code)]
@@ -24,25 +29,25 @@ pub struct Hello {
     pub authentication: Authentication,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Identified {
     pub result: MoblinkResult,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct StartTunnelRequest {
     pub address: String,
     pub port: u16,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum MessageRequestData {
     StartTunnel(StartTunnelRequest),
     Status(Present),
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct MessageRequest {
     pub id: u32,
     pub data: MessageRequestData,
@@ -58,40 +63,40 @@ impl MessageRequest {
     }
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct StartTunnelResponseData {
     pub port: u16,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusResponseData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub battery_percentage: Option<i32>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum ResponseData {
     StartTunnel(StartTunnelResponseData),
     Status(StatusResponseData),
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct MessageResponse {
     pub id: u32,
     pub result: MoblinkResult,
     pub data: ResponseData,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Identify {
     pub id: String,
     pub name: String,
     pub authentication: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum MessageToRelay {
     Hello(Hello),
@@ -99,9 +104,18 @@ pub enum MessageToRelay {
     Request(MessageRequest),
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum MessageToStreamer {
     Identify(Identify),
     Response(MessageResponse),
+}
+
+pub fn calculate_authentication(password: &str, salt: &str, challenge: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{}{}", password, salt).as_bytes());
+    let hash1 = hasher.finalize_reset();
+    hasher.update(format!("{}{}", general_purpose::STANDARD.encode(hash1), challenge).as_bytes());
+    let hash2 = hasher.finalize();
+    general_purpose::STANDARD.encode(hash2)
 }

@@ -3,10 +3,12 @@ use crate::protocol::{
     MessageRequestData, MessageResponse, MessageToRelay, MessageToStreamer, MoblinkResult, Present,
     ResponseData, StartTunnelRequest, API_VERSION,
 };
+use crate::MDNS_SERVICE_TYPE;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info};
 use rand::distr::{Alphanumeric, SampleString};
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -16,6 +18,8 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 
 pub type TunnelCreatedClosure = Box<
     dyn Fn(String, String, String, u16) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>
@@ -261,6 +265,9 @@ impl Relay {
 
 pub struct Streamer {
     me: Weak<Mutex<Self>>,
+    id: String,
+    name: String,
+    address: String,
     port: u16,
     password: String,
     destination_address: String,
@@ -272,6 +279,9 @@ pub struct Streamer {
 
 impl Streamer {
     pub fn new(
+        id: String,
+        name: String,
+        address: String,
         port: u16,
         password: String,
         destination_address: String,
@@ -282,6 +292,9 @@ impl Streamer {
         Arc::new_cyclic(|me| {
             Mutex::new(Self {
                 me: me.clone(),
+                id,
+                name,
+                address,
                 port,
                 password,
                 destination_address,
@@ -294,14 +307,30 @@ impl Streamer {
     }
 
     pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let listener_address = format!("0.0.0.0:{}", self.port);
+        let listener_address = format!("{}:{}", self.address, self.port);
         let listener = TcpListener::bind(&listener_address).await?;
 
         info!("WebSocket server listening on '{}'", listener_address);
 
+        let service_daemon = ServiceDaemon::new()?;
+        let mut properties = HashMap::new();
+        properties.insert("name".to_string(), self.name.clone());
+        let service_info = ServiceInfo::new(
+            MDNS_SERVICE_TYPE,
+            &self.id,
+            &format!("{}.local.", self.id),
+            &self.address,
+            self.port,
+            properties,
+        )?;
+
         let streamer = self.me.clone();
 
         tokio::spawn(async move {
+            if let Err(error) = service_daemon.register(service_info) {
+                error!("Failed to register mDNS service with error: {}", error);
+            }
+
             while let Ok((tcp_stream, remote_address)) = listener.accept().await {
                 if let Some(streamer) = streamer.upgrade() {
                     streamer

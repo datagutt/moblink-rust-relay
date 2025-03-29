@@ -9,11 +9,23 @@ use tokio::process::Command;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Id
+    #[arg(long)]
+    id: String,
+
+    /// Name
+    #[arg(long)]
+    name: String,
+
     /// Password
     #[arg(long)]
     password: String,
 
-    /// Websocket server port
+    /// Websocket server listener address. Used for mDNS as well right now.
+    #[arg(long)]
+    websocket_server_address: String,
+
+    /// Websocket server listener port
     #[arg(long)]
     websocket_server_port: u16,
 
@@ -103,6 +115,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logging(&args.log_level);
 
     let streamer = streamer::Streamer::new(
+        args.id,
+        args.name,
+        args.websocket_server_address,
         args.websocket_server_port,
         args.password,
         args.destination_address,

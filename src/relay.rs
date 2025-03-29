@@ -16,6 +16,9 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use crate::protocol::*;
 
+// Move to other file.
+pub const MDNS_SERVICE_TYPE: &str = "_moblink._tcp.local.";
+
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {

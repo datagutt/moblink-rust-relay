@@ -67,8 +67,12 @@ impl Relay {
                 }
             }
 
-            info!("Relay disconnected: {}", relay.lock().await.remote_address);
-            relay.lock().await.tunnel_destroyed().await;
+            let mut relay_guard = relay.lock().await;
+            info!("Relay disconnected: {}", relay_guard.remote_address);
+            relay_guard.tunnel_destroyed().await;
+            if let Some(streamer) = relay_guard.streamer.upgrade() {
+                streamer.lock().await.remove_relay(&relay);
+            }
         });
     }
 
@@ -84,7 +88,7 @@ impl Relay {
                 }
             },
             Message::Ping(data) => Ok(self.writer.send(Message::Pong(data)).await?),
-            _ => Err(format!("Not a text message: {:?}", message).into()),
+            _ => Err(format!("Unsupported wbsocket message: {:?}", message).into()),
         }
     }
 
@@ -275,12 +279,26 @@ impl Streamer {
                 let (writer, reader) = websocket_stream.split();
                 let relay = Relay::new(self.me.clone(), remote_address, writer);
                 relay.lock().await.start(reader);
-                self.relays.push(relay);
+                self.add_relay(relay);
             }
             Err(error) => {
                 error!("Relay websocket handshake failed with: {}", error);
             }
         }
+    }
+
+    fn add_relay(&mut self, relay: Arc<Mutex<Relay>>) {
+        self.relays.push(relay);
+        self.log_number_of_relays();
+    }
+
+    fn remove_relay(&mut self, relay: &Arc<Mutex<Relay>>) {
+        self.relays.retain(|r| !Arc::ptr_eq(r, relay));
+        self.log_number_of_relays();
+    }
+
+    fn log_number_of_relays(&self) {
+        info!("Number of relays: {}", self.relays.len())
     }
 }
 

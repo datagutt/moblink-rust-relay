@@ -1,5 +1,6 @@
-use moblink_rust::streamer;
 use std::time::Duration;
+
+use moblink_rust::streamer;
 
 use clap::Parser;
 
@@ -14,9 +15,13 @@ struct Args {
     #[arg(long)]
     websocket_server_port: u16,
 
-    /// Streaming destination as address:port
+    /// Streaming destination address
     #[arg(long)]
-    destination: String,
+    destination_address: String,
+
+    /// Streaming destination port
+    #[arg(long)]
+    destination_port: u16,
 
     /// Tunnel via relay created executable.
     /// Called with --relay-id <id> --relay-name <name> --address <address> --port <port>.
@@ -45,13 +50,14 @@ fn setup_logging(log_level: &str) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     setup_logging(&args.log_level);
-    run(args).await;
-    Ok(())
-}
 
-async fn run(args: Args) {
-    let streamer = streamer::Streamer::new(args.password);
-    streamer.lock().await.start().await;
+    let streamer = streamer::Streamer::new(
+        args.websocket_server_port,
+        args.password,
+        args.destination_address,
+        args.destination_port,
+    );
+    streamer.lock().await.start().await?;
 
     loop {
         tokio::time::sleep(Duration::from_secs(3600)).await;

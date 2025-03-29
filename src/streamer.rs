@@ -1,26 +1,289 @@
+use crate::protocol::{
+    calculate_authentication, Authentication, Hello, Identified, Identify, MessageRequest,
+    MessageRequestData, MessageResponse, MessageToRelay, MessageToStreamer, MoblinkResult, Present,
+    ResponseData, StartTunnelRequest, API_VERSION,
+};
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
+use log::{error, info};
+use rand::distr::{Alphanumeric, SampleString};
+use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
-
-use log::info;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 
-pub struct Streamer {
+struct Relay {
     me: Weak<Mutex<Self>>,
-    password: String,
+    streamer: Weak<Mutex<Streamer>>,
+    remote_address: SocketAddr,
+    writer: SplitSink<WebSocketStream<TcpStream>, Message>,
+    challenge: String,
+    salt: String,
+    identified: bool,
+    relay_id: String,
+    relay_name: String,
+    tunnel_port: Option<u16>,
 }
 
-impl Streamer {
-    pub fn new(password: String) -> Arc<Mutex<Self>> {
+impl Relay {
+    pub fn new(
+        streamer: Weak<Mutex<Streamer>>,
+        remote_address: SocketAddr,
+        writer: SplitSink<WebSocketStream<TcpStream>, Message>,
+    ) -> Arc<Mutex<Self>> {
         Arc::new_cyclic(|me| {
             Mutex::new(Self {
                 me: me.clone(),
-                password,
+                streamer,
+                remote_address,
+                writer,
+                challenge: String::new(),
+                salt: String::new(),
+                identified: false,
+                relay_id: "".into(),
+                relay_name: "".into(),
+                tunnel_port: None,
             })
         })
     }
 
-    pub async fn start(&mut self) {
-        info!("Start with password {}", self.password);
+    fn start(&mut self, mut reader: SplitStream<WebSocketStream<TcpStream>>) {
+        let relay = self.me.clone();
+
+        tokio::spawn(async move {
+            let Some(relay) = relay.upgrade() else {
+                return;
+            };
+
+            relay.lock().await.start_handshake().await;
+
+            while let Some(Ok(message)) = reader.next().await {
+                if let Err(error) = relay.lock().await.handle_websocket_message(message).await {
+                    error!("Relay error: {}", error);
+                    break;
+                }
+            }
+
+            info!("Relay disconnected: {}", relay.lock().await.remote_address);
+            relay.lock().await.tunnel_destroyed().await;
+        });
     }
 
-    pub async fn stop(&mut self) {}
+    async fn handle_websocket_message(
+        &mut self,
+        message: Message,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match message {
+            Message::Text(text) => match serde_json::from_str(&text) {
+                Ok(message) => self.handle_message(message).await,
+                Err(error) => {
+                    Err(format!("Failed to deserialize message with error: {}", error).into())
+                }
+            },
+            Message::Ping(data) => Ok(self.writer.send(Message::Pong(data)).await?),
+            _ => Err(format!("Not a text message: {:?}", message).into()),
+        }
+    }
+
+    async fn handle_message(
+        &mut self,
+        message: MessageToStreamer,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match message {
+            MessageToStreamer::Identify(identify) => self.handle_message_identify(identify).await,
+            MessageToStreamer::Response(response) => self.handle_message_response(response).await,
+        }
+    }
+
+    async fn handle_message_identify(
+        &mut self,
+        identify: Identify,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(streamer) = self.streamer.upgrade() else {
+            return Err("No streamer".into());
+        };
+        if identify.authentication
+            == calculate_authentication(
+                &streamer.lock().await.password,
+                &self.salt,
+                &self.challenge,
+            )
+        {
+            self.identified = true;
+            self.relay_id = identify.id;
+            self.relay_name = identify.name;
+            let identified = Identified {
+                result: MoblinkResult::Ok(Present {}),
+            };
+            self.send(MessageToRelay::Identified(identified)).await?;
+            self.start_tunnel().await
+        } else {
+            let identified = Identified {
+                result: MoblinkResult::WrongPassword(Present {}),
+            };
+            self.send(MessageToRelay::Identified(identified)).await?;
+            Err("Relay sent wrong password".into())
+        }
+    }
+
+    async fn handle_message_response(
+        &mut self,
+        response: MessageResponse,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match response.data {
+            ResponseData::StartTunnel(data) => {
+                self.tunnel_port = Some(data.port);
+                self.tunnel_created().await;
+            }
+            message => {
+                info!("Ignoring message {:?}", message);
+            }
+        }
+        Ok(())
+    }
+
+    async fn tunnel_created(&self) {
+        let Some(tunnel_port) = self.tunnel_port else {
+            return;
+        };
+        info!(
+            "Tunnel created: {}:{} ({}, {})",
+            self.remote_address.ip(),
+            tunnel_port,
+            self.relay_name,
+            self.relay_id
+        );
+    }
+
+    async fn tunnel_destroyed(&mut self) {
+        let Some(tunnel_port) = self.tunnel_port.take() else {
+            return;
+        };
+        info!(
+            "Tunnel destroyed: {}:{} ({}, {})",
+            self.remote_address.ip(),
+            tunnel_port,
+            self.relay_name,
+            self.relay_id
+        );
+    }
+
+    async fn start_handshake(&mut self) {
+        self.challenge = random_string();
+        self.salt = random_string();
+        self.send_hello().await;
+        self.identified = false;
+    }
+
+    async fn start_tunnel(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(streamer) = self.streamer.upgrade() else {
+            return Err("No streamer".into());
+        };
+        let streamer = streamer.lock().await;
+        let start_tunnel = StartTunnelRequest {
+            address: streamer.destination_address.clone(),
+            port: streamer.destination_port,
+        };
+        let request = MessageRequest {
+            id: 1,
+            data: MessageRequestData::StartTunnel(start_tunnel),
+        };
+        self.send(MessageToRelay::Request(request)).await
+    }
+
+    async fn send_hello(&mut self) {
+        let hello = MessageToRelay::Hello(Hello {
+            api_version: API_VERSION.into(),
+            authentication: Authentication {
+                challenge: self.challenge.clone(),
+                salt: self.salt.clone(),
+            },
+        });
+        self.send(hello).await.ok();
+    }
+
+    async fn send(
+        &mut self,
+        message: MessageToRelay,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let text = serde_json::to_string(&message)?;
+        self.writer.send(Message::Text(text.into())).await?;
+        Ok(())
+    }
+}
+
+pub struct Streamer {
+    me: Weak<Mutex<Self>>,
+    port: u16,
+    password: String,
+    destination_address: String,
+    destination_port: u16,
+    relays: Vec<Arc<Mutex<Relay>>>,
+}
+
+impl Streamer {
+    pub fn new(
+        port: u16,
+        password: String,
+        destination_address: String,
+        destination_port: u16,
+    ) -> Arc<Mutex<Self>> {
+        Arc::new_cyclic(|me| {
+            Mutex::new(Self {
+                me: me.clone(),
+                port,
+                password,
+                destination_address,
+                destination_port,
+                relays: Vec::new(),
+            })
+        })
+    }
+
+    pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let listener_address = format!("0.0.0.0:{}", self.port);
+        let listener = TcpListener::bind(&listener_address).await?;
+
+        info!("WebSocket server listening on '{}'", listener_address);
+
+        let streamer = self.me.clone();
+
+        tokio::spawn(async move {
+            while let Ok((tcp_stream, remote_address)) = listener.accept().await {
+                if let Some(streamer) = streamer.upgrade() {
+                    streamer
+                        .lock()
+                        .await
+                        .handle_relay_connection(tcp_stream, remote_address)
+                        .await;
+                } else {
+                    break;
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn handle_relay_connection(&mut self, tcp_stream: TcpStream, remote_address: SocketAddr) {
+        match tokio_tungstenite::accept_async(tcp_stream).await {
+            Ok(websocket_stream) => {
+                info!("Relay connected: {}", remote_address);
+                let (writer, reader) = websocket_stream.split();
+                let relay = Relay::new(self.me.clone(), remote_address, writer);
+                relay.lock().await.start(reader);
+                self.relays.push(relay);
+            }
+            Err(error) => {
+                error!("Relay websocket handshake failed with: {}", error);
+            }
+        }
+    }
+}
+
+fn random_string() -> String {
+    Alphanumeric.sample_string(&mut rand::rng(), 64)
 }

@@ -5,12 +5,9 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
 
-use base64::engine::general_purpose;
-use base64::Engine as _;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info};
-use sha2::{Digest, Sha256};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout, Duration};
@@ -196,8 +193,8 @@ impl Relay {
                         Message::Binary(data) => {
                             debug!("Received binary message of length: {}", data.len());
                         }
-                        Message::Ping(_) => {
-                            debug!("Received ping message");
+                        Message::Ping(data) => {
+                            relay.send_message(Message::Pong(data)).await.ok();
                         }
                         Message::Pong(_) => {
                             debug!("Received pong message");
@@ -465,10 +462,17 @@ impl Relay {
         message: MessageToStreamer,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let text = serde_json::to_string(&message)?;
+        self.send_message(Message::Text(text.into())).await
+    }
+
+    async fn send_message(
+        &mut self,
+        message: Message,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let Some(writer) = self.ws_writer.as_mut() else {
             return Err("No websocket writer".into());
         };
-        writer.send(Message::Text(text.into())).await?;
+        writer.send(message).await?;
         Ok(())
     }
 }
@@ -599,15 +603,6 @@ fn start_relay_from_destination_to_streamer(
         }
         info!("(relay_to_streamer) Task exiting");
     })
-}
-
-fn calculate_authentication(password: &str, salt: &str, challenge: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(format!("{}{}", password, salt).as_bytes());
-    let hash1 = hasher.finalize_reset();
-    hasher.update(format!("{}{}", general_purpose::STANDARD.encode(hash1), challenge).as_bytes());
-    let hash2 = hasher.finalize();
-    general_purpose::STANDARD.encode(hash2)
 }
 
 async fn create_dual_stack_udp_socket(
